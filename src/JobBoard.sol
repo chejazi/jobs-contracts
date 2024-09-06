@@ -28,12 +28,10 @@ contract JobBoard is Ownable, ReentrancyGuard {
         uint startTime;
 
         bytes32 _offerHash;
-        bool _autoRefunded;
-        uint _timeRefunded;
         uint _timePaid;
-        uint _status;
-
-        mapping(address => bool) _userRefunded;
+        uint _timeRefunded;
+        bool _autoRefunded;
+        mapping(address => bool) _claimedRefund;
 
         EnumerableMap.AddressToUintMap _funderQuantities;
         EnumerableMap.AddressToUintMap _applicantTimes;
@@ -96,7 +94,7 @@ contract JobBoard is Ownable, ReentrancyGuard {
         job.description = description;
         job.token = token;
         job.duration = duration;
-        job.startTime = block.timestamp;
+        job.createTime = block.timestamp;
 
         _profiles[msg.sender].managed.add(jobId);
         _projects[token].open.add(jobId);
@@ -107,7 +105,7 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function update(uint jobId, string memory description) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job description no longer editable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job description no longer editable");
         require(job.manager == msg.sender, "Not authorized to update Job");
 
         job.description = description;
@@ -116,7 +114,7 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function fund(uint jobId, uint quantity) public isRegistered {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job no longer fundable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer fundable");
 
         (,uint funderQuantity) = job._funderQuantities.tryGet(msg.sender);
 
@@ -127,14 +125,14 @@ contract JobBoard is Ownable, ReentrancyGuard {
 
         require(
             IERC20(job.token).transferFrom(msg.sender, address(this), quantity),
-            "Unable to fund"
+            "Unable to fund job"
         );
     }
 
     function apply_(uint jobId) external isRegistered {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job no longer open");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer open");
 
         _profiles[msg.sender].appliedTimes.set(jobId, block.timestamp);
 
@@ -143,14 +141,14 @@ contract JobBoard is Ownable, ReentrancyGuard {
         }
     }
 
-    function withdraw(uint jobId) external {
+    function remove(uint jobId) external {
         _profiles[msg.sender].appliedTimes.remove(jobId);
     }
 
     function offer(uint jobId, bytes32 offerHash) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job no longer offerable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer offerable");
         require(job.manager == msg.sender, "Not Job manager");
 
         job._offerHash = offerHash;
@@ -159,7 +157,7 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function rescind(uint jobId) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job no longer offerable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job offer no longer rescindable");
         require(job.manager == msg.sender, "Not Job manager");
 
         job._offerHash = bytes32(0);
@@ -168,16 +166,15 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function cancel(uint jobId, bool autoRefund) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_CREATED, "Job no longer cancelable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer cancelable");
 
         job._timeRefunded = job.duration;
-        job._status = JOB_STATUS_ENDED;
 
         _projects[job.token].open.remove(jobId);
         _projects[job.token].cancelled.add(jobId);
 
         if (autoRefund) {
-            _refundAll(jobId);
+            _refundAll(job);
         }
     }
 
@@ -186,12 +183,12 @@ contract JobBoard is Ownable, ReentrancyGuard {
 
         bytes32 offerHash = keccak256(abi.encodePacked(jobId, msg.sender, secret));
 
-        require(job._status == JOB_STATUS_CREATED, "Job not open");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job not open");
         require(job._offerHash == offerHash, "Invalid offer");
 
         job.worker = msg.sender;
         job.startTime = block.timestamp;
-        job._status = JOB_STATUS_WORKING;
+        job._offerHash = bytes32(0);
 
         _profiles[msg.sender].worked.add(jobId);
         _projects[job.token].open.remove(jobId);
@@ -210,45 +207,42 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function end(uint jobId, bool autoRefund) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_WORKING, "Job not open");
+        require(getStatus(jobId) == JOB_STATUS_WORKING, "Job not active");
         require(
             job.manager == msg.sender ||
             job.worker == msg.sender,
-            "Not permitted to end contract"
+            "Not permitted to end job"
         );
 
         job._timeRefunded = job.duration.sub(getTimeWorked(jobId));
-        job._status = JOB_STATUS_ENDED;
 
-        if (autoRefund && job._timeRefunded > 0) {
-            _refundAll(jobId);
+        if (autoRefund) {
+            _refundAll(job);
         }
     }
 
     function refund(uint jobId) external {
         Job storage job = _jobs[jobId];
 
-        require(job._status == JOB_STATUS_ENDED, "Job funds locked");
-        require(job._timeRefunded > 0, "Nothing to refund");
-        require(!job._autoRefunded, "Refund automatically distributed");
-        require(!job._userRefunded[msg.sender], "Refund already claimed");
+        require(getStatus(jobId) == JOB_STATUS_ENDED, "Nothing to refund");
+        require(!job._autoRefunded, "Refunded automatically");
+        require(!job._claimedRefund[msg.sender], "Refund already claimed");
 
-        job._userRefunded[msg.sender] = true;
+        job._claimedRefund[msg.sender] = true;
 
-        require(
-            IERC20(job.token).transfer(
-                msg.sender,
-                job._funderQuantities.get(msg.sender).mul(job._timeRefunded).div(job.duration)
-            ),
-            "Unable to refund"
-        );
+        uint quantity = job._funderQuantities.get(msg.sender).mul(job._timeRefunded).div(job.duration);
+        if (quantity > 0) {
+            require(
+                IERC20(job.token).transfer(msg.sender, quantity),
+                "Unable to refund job"
+            );
+        }
     }
 
-    // Pay out any amount owed to worker
     function claim(uint jobId, address to) public {
         Job storage job = _jobs[jobId];
 
-        require(job.worker == msg.sender, "Not Job worker");
+        require(job.worker == msg.sender, "Not job worker");
 
         (uint timeOwed, uint coinOwed) = getUnpaidTimeAndMoney(jobId);
 
@@ -257,32 +251,44 @@ contract JobBoard is Ownable, ReentrancyGuard {
         if (coinOwed > 0) {
             require(
                 IERC20(job.token).transfer(to, coinOwed),
-                "Unable to transfer token"
+                "Unable to send compensation"
             );
         }
     }
 
-    function _refundAll(uint jobId) internal {
-        Job storage job = _jobs[jobId];
-
+    function _refundAll(Job storage job) internal {
         job._autoRefunded = true;
 
-        bool success = true;
-
-        uint duration = job.duration;
         uint timeRefunded = job._timeRefunded;
-        IERC20 token = IERC20(job.token);
+        if (timeRefunded > 0) {
+            EnumerableMap.AddressToUintMap storage funderQuantities = job._funderQuantities;
+            address[] memory funders = funderQuantities.keys();
+            IERC20 token = IERC20(job.token);
+            uint duration = job.duration;
 
-        EnumerableMap.AddressToUintMap storage funderQuantities = job._funderQuantities;
-        address[] memory funders = funderQuantities.keys();
-        for (uint i = 0; i < funders.length; i++) {
-            address funder = funders[i];
-            success = success && token.transfer(
-                funder,
-                funderQuantities.get(funder).mul(timeRefunded).div(duration)
-            );
+            bool success = true;
+            for (uint i = 0; i < funders.length; i++) {
+                address funder = funders[i];
+                uint quantity = funderQuantities.get(funder).mul(timeRefunded).div(duration);
+                if (quantity > 0) {
+                    success = success && token.transfer(funder, quantity);
+                }
+            }
+            require(success, "Unable to refund");
         }
-        require(success, "Unable to refund");
+    }
+
+    function getStatus(uint jobId) public view returns (uint) {
+        Job storage job = _jobs[jobId];
+
+        if (job._timeRefunded > 0) {
+            return JOB_STATUS_ENDED;
+        } else if (job.worker == address(0)) {
+            return JOB_STATUS_CREATED;
+        } else if (getTimeWorked(jobId) < job.duration) {
+            return JOB_STATUS_WORKING;
+        }
+        return JOB_STATUS_ENDED;
     }
 
     function getUnpaidTimeAndMoney(uint jobId) public view returns (uint, uint) {
@@ -299,46 +305,42 @@ contract JobBoard is Ownable, ReentrancyGuard {
     function getTimeWorked(uint jobId) public view returns (uint) {
         Job storage job = _jobs[jobId];
 
-        if (job._status == JOB_STATUS_WORKING) {
+        uint timeRefunded = job._timeRefunded;
+        if (timeRefunded > 0) {
+            return job.duration.sub(timeRefunded);
+        } else if (job.worker != address(0)) {
             return Math.min(
                 block.timestamp.sub(job.startTime),
                 job.duration
             );
-        } else if (job._status == JOB_STATUS_ENDED) {
-            return job.duration.sub(job._timeRefunded);
         }
         return 0;
-    }
-
-    function getStatus(uint jobId) public view returns (uint) {
-        Job storage job = _jobs[jobId];
-
-        if (job._status == JOB_STATUS_WORKING && block.timestamp >= (job.startTime.add(job.duration))) {
-            return JOB_STATUS_ENDED;
-        }
-        return job._status;
     }
 
     function getOfferHash(uint jobId) external view returns (bytes32) {
         return _jobs[jobId]._offerHash;
     }
 
-    function getAutoRefunded(uint jobId) external view returns (bool) {
-        return _jobs[jobId]._autoRefunded;
+    function getTimePaid(uint jobId) external view returns (uint) {
+        return _jobs[jobId]._timePaid;
     }
 
     function getTimeRefunded(uint jobId) external view returns (uint) {
         return _jobs[jobId]._timeRefunded;
     }
 
-    function getTimePaid(uint jobId) external view returns (uint) {
-        return _jobs[jobId]._timePaid;
+    function hasAutoRefunded(uint jobId) external view returns (bool) {
+        return _jobs[jobId]._autoRefunded;
     }
 
-    function getUserRefunded(uint jobId, address user) external view returns (bool) {
-        return _jobs[jobId]._userRefunded[user];
+    function hasClaimedRefund(uint jobId, address user) external view returns (bool) {
+        return _jobs[jobId]._claimedRefund[user];
     }
 
+    function getFunderRefund(uint jobId, address funder) external view returns (uint) {
+        Job storage job = _jobs[jobId];
+        return job._funderQuantities.get(funder).mul(job._timeRefunded).div(job.duration);
+    }
     function getFunderQuantity(uint jobId, address funder) external view returns (uint) {
         return _jobs[jobId]._funderQuantities.get(funder);
     }
@@ -374,6 +376,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _jobs[jobId]._applicantTimes.length();
     }
 
+    function hasApplied(address user, uint jobId) external view returns (bool) {
+        return _profiles[user].appliedTimes.contains(jobId);
+    }
     function getAppliedTimes(address user) external view returns (uint[] memory, uint[] memory) {
         Profile storage profile = _profiles[user];
         uint[] memory jobIds = profile.appliedTimes.keys();
@@ -390,6 +395,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _profiles[user].appliedTimes.length();
     }
 
+    function hasFunded(address user, uint jobId) external view returns (bool) {
+        return _profiles[user].fundedTimes.contains(jobId);
+    }
     function getFundedTimes(address user) external view returns (uint[] memory, uint[] memory) {
         Profile storage profile = _profiles[user];
         uint[] memory jobIds = profile.fundedTimes.keys();
@@ -406,6 +414,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _profiles[user].fundedTimes.length();
     }
 
+    function hasManaged(address user, uint jobId) external view returns (bool) {
+        return _profiles[user].managed.contains(jobId);
+    }
     function getManaged(address user) external view returns (uint[] memory) {
         return _profiles[user].managed.values();
     }
@@ -416,6 +427,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _profiles[user].managed.length();
     }
 
+    function hasWorked(address user, uint jobId) external view returns (bool) {
+        return _profiles[user].worked.contains(jobId);
+    }
     function getWorked(address user) external view returns (uint[] memory) {
         return _profiles[user].worked.values();
     }
@@ -426,6 +440,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _profiles[user].worked.length();
     }
 
+    function isOpen(uint jobId) external view returns (bool) {
+        return _projects[_jobs[jobId].token].open.contains(jobId);
+    }
     function getOpen(address token) external view returns (uint[] memory) {
         return _projects[token].open.values();
     }
@@ -436,6 +453,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _projects[token].open.length();
     }
 
+    function isFilled(uint jobId) external view returns (bool) {
+        return _projects[_jobs[jobId].token].filled.contains(jobId);
+    }
     function getFilled(address token) external view returns (uint[] memory) {
         return _projects[token].filled.values();
     }
@@ -446,6 +466,9 @@ contract JobBoard is Ownable, ReentrancyGuard {
         return _projects[token].filled.length();
     }
 
+    function isCancelled(uint jobId) external view returns (bool) {
+        return _projects[_jobs[jobId].token].cancelled.contains(jobId);
+    }
     function getCancelled(address token) external view returns (uint[] memory) {
         return _projects[token].cancelled.values();
     }

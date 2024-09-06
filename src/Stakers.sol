@@ -64,12 +64,10 @@ contract Stakers is ERC20Snapshot {
         return (tokens, quantities);
     }
 
-    // Disable the transfer function
     function transfer(address, uint256) public pure override returns (bool) {
         revert("Transfers disabled");
     }
 
-    // Disable the transferFrom function
     function transferFrom(address, address, uint256) public pure override returns (bool) {
         revert("Transfers disabled");
     }
@@ -119,7 +117,7 @@ contract Stakers is ERC20Snapshot {
     }
 
 
-    function isClaimed(address user, uint snapshotId) public view returns (bool) {
+    function hasClaimed(address user, uint snapshotId) public view returns (bool) {
         return _userClaimed[user].contains(snapshotId);
     }
     function getClaimed(address user) external view returns (uint[] memory) {
