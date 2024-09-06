@@ -16,8 +16,6 @@ contract JobBoard is Ownable, ReentrancyGuard {
     using EnumerableMap for EnumerableMap.AddressToUintMap;
     using EnumerableMap for EnumerableMap.UintToUintMap;
 
-    address private constant _feeToken = 0xd21111c0e32df451eb61A23478B438e3d71064CB; // $JOBS
-
     struct Job {
         string title;
         string description;
@@ -66,9 +64,11 @@ contract JobBoard is Ownable, ReentrancyGuard {
     uint public constant JOB_STATUS_WORKING = 2;
     uint public constant JOB_STATUS_ENDED = 3;
 
-    uint private constant FEE_BIPS = 1000; // 10%
-    uint private constant WORKER_BIPS = 9000; // 90%
-    uint private constant TOTAL_BIPS = 10000; // 100%
+    uint public constant FEE_BIPS = 1000; // 10%
+    uint public constant WORKER_BIPS = 9000; // 90%
+    uint public constant TOTAL_BIPS = 10000; // 100%
+
+    address public constant STAKE_TOKEN = 0xd21111c0e32df451eb61A23478B438e3d71064CB; // $JOBS
 
     modifier isRegistered {
         _directory.autoRegister(msg.sender);
@@ -201,7 +201,7 @@ contract JobBoard is Ownable, ReentrancyGuard {
         IERC20(job.token).approve(address(_directory), feeQuantity);
         _directory.rewardUserStakers(
             msg.sender,
-            _feeToken,
+            STAKE_TOKEN,
             job.token,
             feeQuantity
         );
