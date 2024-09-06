@@ -22,7 +22,10 @@ contract UserAppDirectory is Ownable {
     }
 
     constructor() {
-        _userAppTemplate = address(new UserApp(address(this)));
+        UserApp template = new UserApp(address(this));
+        template.init(address(this));
+
+        _userAppTemplate = address(template);
     }
 
     function _register(address user, string memory bio) internal returns (address) {

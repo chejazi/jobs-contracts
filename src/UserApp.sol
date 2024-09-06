@@ -16,8 +16,8 @@ contract UserApp is Rebased {
 
     address private constant _rebase = 0x89fA20b30a88811FBB044821FEC130793185c60B;
     address private immutable _stakePoolTemplate;
+    address private immutable _directory;
     address private _user;
-    address private _directory;
     mapping(address => address) private _stakePool;
     mapping(address => EnumerableSet.AddressSet) private _userBlocks;
     mapping(address => EnumerableSet.AddressSet) private _userStakes;
@@ -32,16 +32,18 @@ contract UserApp is Rebased {
         _;
     }
 
-    constructor(address user) {
-        _stakePoolTemplate = address(new StakePool(address(this), user, address(0)));
-        _user = user;
-        _directory = msg.sender;
+    constructor(address directory) {
+        StakePool template = new StakePool();
+        template.init(address(this), address(0), address(0));
+
+        _stakePoolTemplate = address(template);
+        _directory = directory;
     }
 
     function init(address user) external {
         require(_user == address(0), "Cannot reinitialize");
+        require(user != address(0), "User cannot be null");
         _user = user;
-        _directory = msg.sender;
     }
 
     function onStake(address user, address token, uint quantity) external onlyRebase {
@@ -91,6 +93,10 @@ contract UserApp is Rebased {
             (rewardTokens[i], quantities[i]) = StakePool(stakedTokens[i]).getUserRewards(user, snapshots[i]);
         }
         return (rewardTokens, quantities);
+    }
+
+    function getDirectory() external view returns (address) {
+        return _directory;
     }
 
     function getUser() external view returns (address) {

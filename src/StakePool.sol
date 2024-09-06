@@ -23,14 +23,11 @@ contract StakePool is ERC20Snapshot {
         _;
     }
 
-    constructor(address app, address user, address token) ERC20("", "") {
-        _app = app;
-        _user = user;
-        _token = token;
-    }
+    constructor() ERC20("", "") { }
 
     function init(address app, address user, address token) external {
         require(_app == address(0), "Cannot reinitialize");
+        require(app != address(0), "App cannot be null");
         _app = app;
         _user = user;
         _token = token;
