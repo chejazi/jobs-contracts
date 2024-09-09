@@ -3,9 +3,14 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
-import "./UserAppDirectory.sol";
+
+interface UserAppDirectory {
+    function rewardUserStakers(address user, address stakedToken, address rewardToken, uint quantity) external;
+    function autoRegister(address user) external;
+}
 
 contract JobBoard {
     using SafeMath for uint256;
@@ -55,6 +60,11 @@ contract JobBoard {
 
     UserAppDirectory private _directory;
 
+    string private constant ERROR_TRANSFER_FAILED = "Transfer failed";
+    string private constant ERROR_NOT_PERMITTED = "Not permitted";
+    string private constant ERROR_NO_LONGER_PERFORMABLE = "No longer performable";
+    string private constant ERROR_ALREADY_PERFORMED = "Already performed";
+
     uint public constant JOB_STATUS_CREATED = 1;
     uint public constant JOB_STATUS_WORKING = 2;
     uint public constant JOB_STATUS_ENDED = 3;
@@ -84,7 +94,7 @@ contract JobBoard {
         uint jobId = ++_jobCounter;
         Job storage job = _jobs[jobId];
 
-        require(duration > 0 && duration < 1000000000, "Invalid job duration");
+        require(duration > 0 && duration < 1000000000, "Invalid duration");
         require(quantity > 0, "Invalid token quantity");
 
         job.title = title;
@@ -102,8 +112,8 @@ contract JobBoard {
     function update(uint jobId, string memory description) external {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job description no longer editable");
-        require(job.manager == msg.sender, "Not authorized to update Job");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
+        require(job.manager == msg.sender, ERROR_NOT_PERMITTED);
 
         job.description = description;
     }
@@ -111,7 +121,7 @@ contract JobBoard {
     function fund(uint jobId, uint quantity) public isRegistered {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer fundable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
 
         (,uint funderQuantity) = job._funderQuantities.tryGet(msg.sender);
 
@@ -122,14 +132,14 @@ contract JobBoard {
 
         require(
             IERC20(job.token).transferFrom(msg.sender, address(this), quantity),
-            "Unable to fund job"
+            ERROR_TRANSFER_FAILED
         );
     }
 
     function apply_(uint jobId) external isRegistered {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer open");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
 
         _profiles[msg.sender].appliedTimes.set(jobId, block.timestamp);
 
@@ -142,28 +152,23 @@ contract JobBoard {
         _profiles[msg.sender].appliedTimes.remove(jobId);
     }
 
-    function offer(uint jobId, bytes32 offerHash) external {
+    function offer(uint jobId, bytes32 offerHash) public {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer offerable");
-        require(job.manager == msg.sender, "Not Job manager");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
+        require(job.manager == msg.sender, ERROR_NOT_PERMITTED);
 
         job._offerHash = offerHash;
     }
 
     function rescind(uint jobId) external {
-        Job storage job = _jobs[jobId];
-
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job offer no longer rescindable");
-        require(job.manager == msg.sender, "Not Job manager");
-
-        job._offerHash = bytes32(0);
+        offer(jobId, bytes32(0));
     }
 
     function cancel(uint jobId, bool autoRefund) external {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job no longer cancelable");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
 
         job._timeRefunded = job.duration;
 
@@ -180,7 +185,7 @@ contract JobBoard {
 
         bytes32 offerHash = keccak256(abi.encodePacked(jobId, msg.sender, secret));
 
-        require(getStatus(jobId) == JOB_STATUS_CREATED, "Job not open");
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_NO_LONGER_PERFORMABLE);
         require(job._offerHash == offerHash, "Invalid offer");
 
         job.worker = msg.sender;
@@ -204,11 +209,11 @@ contract JobBoard {
     function end(uint jobId, bool autoRefund) external {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_WORKING, "Job not active");
+        require(getStatus(jobId) == JOB_STATUS_WORKING, ERROR_NO_LONGER_PERFORMABLE);
         require(
             job.manager == msg.sender ||
             job.worker == msg.sender,
-            "Not permitted to end job"
+            ERROR_NOT_PERMITTED
         );
 
         job._timeRefunded = job.duration.sub(getTimeWorked(jobId));
@@ -221,9 +226,12 @@ contract JobBoard {
     function refund(uint jobId) external {
         Job storage job = _jobs[jobId];
 
-        require(getStatus(jobId) == JOB_STATUS_ENDED, "Nothing to refund");
-        require(!job._autoRefunded, "Refunded automatically");
-        require(!job._claimedRefund[msg.sender], "Refund already claimed");
+        require(getStatus(jobId) == JOB_STATUS_ENDED, "Job still active");
+        require(
+            !job._autoRefunded &&
+            !job._claimedRefund[msg.sender],
+            ERROR_ALREADY_PERFORMED
+        );
 
         job._claimedRefund[msg.sender] = true;
 
@@ -231,7 +239,7 @@ contract JobBoard {
         if (quantity > 0) {
             require(
                 IERC20(job.token).transfer(msg.sender, quantity),
-                "Unable to refund job"
+                ERROR_TRANSFER_FAILED
             );
         }
     }
@@ -239,7 +247,7 @@ contract JobBoard {
     function claim(uint jobId, address to) public {
         Job storage job = _jobs[jobId];
 
-        require(job.worker == msg.sender, "Not job worker");
+        require(job.worker == msg.sender, ERROR_NOT_PERMITTED);
 
         (uint timeOwed, uint coinOwed) = getUnpaidTimeAndMoney(jobId);
 
@@ -248,7 +256,7 @@ contract JobBoard {
         if (coinOwed > 0) {
             require(
                 IERC20(job.token).transfer(to, coinOwed),
-                "Unable to send compensation"
+                ERROR_TRANSFER_FAILED
             );
         }
     }
@@ -271,7 +279,7 @@ contract JobBoard {
                     success = success && token.transfer(funder, quantity);
                 }
             }
-            require(success, "Unable to refund");
+            require(success, ERROR_TRANSFER_FAILED);
         }
     }
 
@@ -316,14 +324,6 @@ contract JobBoard {
 
     function getOfferHash(uint jobId) external view returns (bytes32) {
         return _jobs[jobId]._offerHash;
-    }
-
-    function getTimePaid(uint jobId) external view returns (uint) {
-        return _jobs[jobId]._timePaid;
-    }
-
-    function getTimeRefunded(uint jobId) external view returns (uint) {
-        return _jobs[jobId]._timeRefunded;
     }
 
     function hasAutoRefunded(uint jobId) external view returns (bool) {
@@ -411,9 +411,6 @@ contract JobBoard {
         return _profiles[user].fundedTimes.length();
     }
 
-    function hasManaged(address user, uint jobId) external view returns (bool) {
-        return _profiles[user].managed.contains(jobId);
-    }
     function getManaged(address user) external view returns (uint[] memory) {
         return _profiles[user].managed.values();
     }
@@ -424,9 +421,6 @@ contract JobBoard {
         return _profiles[user].managed.length();
     }
 
-    function hasWorked(address user, uint jobId) external view returns (bool) {
-        return _profiles[user].worked.contains(jobId);
-    }
     function getWorked(address user) external view returns (uint[] memory) {
         return _profiles[user].worked.values();
     }
@@ -437,9 +431,6 @@ contract JobBoard {
         return _profiles[user].worked.length();
     }
 
-    function isOpen(uint jobId) external view returns (bool) {
-        return _projects[_jobs[jobId].token].open.contains(jobId);
-    }
     function getOpen(address token) external view returns (uint[] memory) {
         return _projects[token].open.values();
     }
@@ -450,9 +441,6 @@ contract JobBoard {
         return _projects[token].open.length();
     }
 
-    function isFilled(uint jobId) external view returns (bool) {
-        return _projects[_jobs[jobId].token].filled.contains(jobId);
-    }
     function getFilled(address token) external view returns (uint[] memory) {
         return _projects[token].filled.values();
     }
@@ -463,9 +451,6 @@ contract JobBoard {
         return _projects[token].filled.length();
     }
 
-    function isCancelled(uint jobId) external view returns (bool) {
-        return _projects[_jobs[jobId].token].cancelled.contains(jobId);
-    }
     function getCancelled(address token) external view returns (uint[] memory) {
         return _projects[token].cancelled.values();
     }
@@ -474,6 +459,20 @@ contract JobBoard {
     }
     function getNumCancelled(address token) external view returns (uint) {
         return _projects[token].cancelled.length();
+    }
+
+    function getStaff(uint jobId) external view returns (address, address) {
+        Job storage job = _jobs[jobId];
+        return (job.manager, job.worker);
+    }
+
+    function getCompensation(uint jobId) external view returns (address, uint, uint) {
+        Job storage job = _jobs[jobId];
+        return (
+            job.token,
+            job.quantity,
+            job.duration
+        );
     }
 
     function getJob(uint jobId) external view returns (

@@ -57,6 +57,7 @@ contract UserAppDirectory is Ownable {
         _register(msg.sender, bio);
     }
     function update(string memory bio) external {
+        _register(msg.sender, bio);
         _userBio[msg.sender] = bio;
     }
 
