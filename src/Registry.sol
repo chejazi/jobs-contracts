@@ -5,15 +5,16 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "./UserApp.sol";
+import "./Splitter.sol";
 
-contract UserAppDirectory is Ownable {
+contract Registry is Ownable {
     using EnumerableSet for EnumerableSet.AddressSet;
 
-    address private immutable _userAppTemplate;
-    mapping(address => address) private _userApp;
+    address private immutable _splitterTemplate;
+    mapping(address => address) private _userSplitter;
     mapping(address => string) private _userBio;
     EnumerableSet.AddressSet private _users;
+    EnumerableSet.AddressSet private _splitters;
     EnumerableSet.AddressSet private _registrars;
 
     modifier onlyRegistrar {
@@ -22,32 +23,33 @@ contract UserAppDirectory is Ownable {
     }
 
     constructor() {
-        UserApp template = new UserApp(address(this));
+        Splitter template = new Splitter(address(this));
         template.init(address(this));
 
-        _userAppTemplate = address(template);
+        _splitterTemplate = address(template);
     }
 
     function _register(address user, string memory bio) internal returns (address) {
-        address userApp = _userApp[user];
-        if (userApp == address(0)) {
-            userApp = Clones.cloneDeterministic(_userAppTemplate, bytes32(uint(uint160(user))));
-            UserApp(userApp).init(user);
-            _userApp[user] = userApp;
+        address splitter = _userSplitter[user];
+        if (splitter == address(0)) {
+            splitter = Clones.cloneDeterministic(_splitterTemplate, keccak256(abi.encode(user)));
+            Splitter(splitter).init(user);
+            _userSplitter[user] = splitter;
             _userBio[user] = bio;
             _users.add(user);
+            _splitters.add(splitter);
         }
-        return userApp;
+        return splitter;
     }
 
-    function rewardUserStakers(address user, address stakedToken, address rewardToken, uint quantity) external {
-        address userApp = _userApp[user];
-        require(userApp != address(0), "User not registered");
+    function rewardStakers(address stakedUser, address stakedToken, address rewardToken, uint rewardQuantity) external {
+        address splitter = _userSplitter[stakedUser];
+        require(splitter != address(0), "User not registered");
         require(
-            IERC20(rewardToken).transferFrom(msg.sender, userApp, quantity),
+            IERC20(rewardToken).transferFrom(msg.sender, splitter, rewardQuantity),
             "Unable to transfer token"
         );
-        UserApp(userApp).rewardStakers(stakedToken, rewardToken, quantity);
+        Splitter(splitter).split(stakedToken, rewardToken, rewardQuantity);
     }
 
     function autoRegister(address user) external onlyRegistrar {
@@ -93,25 +95,24 @@ contract UserAppDirectory is Ownable {
         return _users.contains(user);
     }
 
-    function getApp(address user) external view returns (address) {
-        return _userApp[user];
+    function getSplitters() external view returns (address[] memory) {
+        return _splitters.values();
     }
-    function getApps(address[] memory users) external view returns (address[] memory) {
-        address[] memory apps = new address[](users.length);
-        for (uint i = 0; i < users.length; i++) {
-            apps[i] = _userApp[users[i]];
-        }
-        return apps;
+    function getSplitterAt(uint index) external view returns (address) {
+        return _splitters.at(index);
+    }
+    function getNumSplitters() external view returns (uint) {
+        return _splitters.length();
+    }
+    function isSplitter(address app) external view returns (bool) {
+        return _splitters.contains(app);
+    }
+
+    function getSplitter(address user) external view returns (address) {
+        return _userSplitter[user];
     }
 
     function getBio(address user) external view returns (string memory) {
         return _userBio[user];
-    }
-    function getBios(address[] memory users) external view returns (string[] memory) {
-        string[] memory bios = new string[](users.length);
-        for (uint i = 0; i < users.length; i++) {
-            bios[i] = _userBio[users[i]];
-        }
-        return bios;
     }
 }
