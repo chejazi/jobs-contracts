@@ -2,14 +2,16 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./IRebase.sol";
 import "./IJobBoard.sol";
 import "./IRegistry.sol";
 import "./ISplitter.sol";
 import "./IStakeTracker.sol";
 
 contract ReadAPI {
-    IJobBoard private constant _jobBoard = IJobBoard(0xc81cb2E24A4373210F62061D929f00b1B9D2E88d);
-    IRegistry private constant _registry = IRegistry(0x90427747BF11cf53CADC9c0e1ae7ac62B76b15B9);
+    IRebase private constant _rebase = IRebase(0x89fA20b30a88811FBB044821FEC130793185c60B);
+    IJobBoard private constant _jobBoard = IJobBoard(0xbb69DBAC4aA4b886863b5B4278629FFbDb91Eb54);
+    IRegistry private constant _registry = IRegistry(0x4011AaBAD557be4858E08496Db5B1f506a4e6167);
     address private constant _jobsToken = 0xd21111c0e32df451eb61A23478B438e3d71064CB; // $JOBS
 
     function getListing(uint jobId) external view returns (
@@ -64,17 +66,19 @@ contract ReadAPI {
         return (titles, descriptions, managers, tokens, quantities, durations, createTimes, statuses);
     }
 
-    function getTokenMetadata(address[] memory tokens) public view returns (string[] memory, string[] memory, uint[] memory) {
+    function getTokenMetadata(address[] memory tokens) public view returns (string[] memory, string[] memory, uint[] memory, uint[] memory supply) {
         string[] memory names = new string[](tokens.length);
         string[] memory symbols = new string[](tokens.length);
         uint[] memory decimals = new uint[](tokens.length);
+        uint[] memory supplies = new uint[](tokens.length);
         for (uint i = 0; i < tokens.length; i++) {
             ERC20 token = ERC20(tokens[i]);
             names[i] = token.name();
             symbols[i] = token.symbol();
             decimals[i] = token.decimals();
+            supplies[i] = token.totalSupply();
         }
-        return (names, symbols, decimals);
+        return (names, symbols, decimals, supplies);
     }
 
     function getStakedJobs(address[] memory users) external view returns (uint[] memory) {
@@ -89,5 +93,81 @@ contract ReadAPI {
             }
         }
         return staked;
+    }
+
+    function getScouters(address user) external view returns (address[] memory stakers, uint[] memory amounts) {
+        address splitter = _registry.getSplitter(user);
+        if (splitter != address(0)) {
+            stakers = _rebase.getAppUsers(splitter);
+            amounts = new uint[](stakers.length);
+            for (uint i = 0; i < stakers.length; i++) {
+                amounts[i] = _rebase.getUserAppStake(stakers[i], splitter, _jobsToken);
+            }
+        }
+        return (stakers, amounts);
+    }
+
+    function getScouting(address user) external view returns (address[] memory scouting, uint[] memory amounts) {
+        address[] memory apps = _rebase.getUserApps(user);
+        uint numSplitters = 0;
+        for (uint i = 0; i < apps.length; i++) {
+            if (_registry.isSplitter(apps[i])) {
+                numSplitters++;
+            } else {
+                apps[i] = address(0);
+            }
+        }
+        scouting = new address[](numSplitters);
+        amounts = new uint[](numSplitters);
+        uint splitterCounter = 0;
+        for (uint i = 0; i < apps.length; i++) {
+            if (apps[i] != address(0)) {
+                scouting[splitterCounter] = ISplitter(apps[i]).getUser();
+                amounts[splitterCounter] = _rebase.getUserAppStake(user, apps[i], _jobsToken);
+                splitterCounter++;
+            }
+        }
+        return (scouting, amounts);
+    }
+
+    function getScoutEarnings(address scout, address[] memory scouting) external view returns (
+        address[] memory users,
+        address[] memory splitters,
+        uint[] memory snapshotIds,
+        address[] memory tokens,
+        uint[] memory amounts,
+        bool[] memory claimed
+    ) {
+        ISplitter splitter;
+        IStakeTracker stakeTracker;
+        uint n = 0;
+        for (uint i = 0; i < scouting.length; i++) {
+            splitter = ISplitter(_registry.getSplitter(scouting[i]));
+            stakeTracker = IStakeTracker(splitter.getStakeTracker(_jobsToken));
+            n += stakeTracker.getCurrentSnapshotId();
+        }
+        users = new address[](n);
+        splitters = new address[](n);
+        snapshotIds = new uint[](n);
+        tokens = new address[](n);
+        amounts = new uint[](n);
+        claimed = new bool[](n);
+        n = 0;
+        for (uint i = 0; i < scouting.length; i++) {
+            splitter = ISplitter(_registry.getSplitter(scouting[i]));
+            stakeTracker = IStakeTracker(splitter.getStakeTracker(_jobsToken));
+            address user = splitter.getUser();
+            for (uint j = stakeTracker.getCurrentSnapshotId(); j > 0; j--) {
+                users[n] = user;
+                splitters[n] = address(splitter);
+                snapshotIds[n] = j;
+                (tokens[n], amounts[n]) = stakeTracker.getUserReward(scout, j);
+                claimed[n] = stakeTracker.hasClaimed(scout, j);
+                n++;
+            }
+        }
+        return (
+            users, splitters, snapshotIds, tokens, amounts, claimed
+        );
     }
 }

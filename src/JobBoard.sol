@@ -6,9 +6,10 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
+import "./IJobBoard.sol";
 import "./IRegistry.sol";
 
-contract JobBoard {
+contract JobBoard is IJobBoard {
     using SafeMath for uint256;
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -56,6 +57,10 @@ contract JobBoard {
     mapping(address => Profile) private _profiles;
     mapping(address => Project) private _projects;
     EnumerableSet.AddressSet _tokens;
+
+    EnumerableSet.UintSet private _open;
+    EnumerableSet.UintSet private _filled;
+    EnumerableSet.UintSet private _cancelled;
 
     IRegistry private immutable _registry;
 
@@ -106,17 +111,31 @@ contract JobBoard {
         _profiles[msg.sender].managed.add(jobId);
         _projects[token].open.add(jobId);
         _tokens.add(token);
+        _open.add(jobId);
 
         fund(jobId, quantity);
     }
 
-    function update(uint jobId, string memory description) external {
+    function updateDescription(uint jobId, string memory description) external {
         Job storage job = _jobs[jobId];
 
         require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
         require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
 
         job.description = description;
+    }
+
+    function updateDuration(uint jobId, uint duration) external {
+        Job storage job = _jobs[jobId];
+
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
+        require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
+        require(
+            duration > 0 &&
+            duration < 1000000000,
+            ERROR_INVALID_VALUE
+        );
+        job.duration = duration;
     }
 
     function transfer(uint jobId, address manager) external {
@@ -168,8 +187,9 @@ contract JobBoard {
         }
     }
 
-    function remove(uint jobId) external {
+    function unapply(uint jobId) external {
         _profiles[msg.sender].appliedTimes.remove(jobId);
+        _jobs[jobId].applicantTimes.remove(msg.sender);
     }
 
     function offer(uint jobId, bytes32 hash) public {
@@ -181,6 +201,10 @@ contract JobBoard {
         job.pendingOffer = hash;
     }
 
+    function rescind(uint jobId) public {
+        offer(jobId, bytes32(0));
+    }
+
     function cancel(uint jobId) external {
         Job storage job = _jobs[jobId];
 
@@ -190,6 +214,8 @@ contract JobBoard {
 
         _projects[job.token].open.remove(jobId);
         _projects[job.token].cancelled.add(jobId);
+        _open.remove(jobId);
+        _cancelled.add(jobId);
 
         refund(jobId, msg.sender);
     }
@@ -208,6 +234,8 @@ contract JobBoard {
         _profiles[msg.sender].worked.add(jobId);
         _projects[job.token].open.remove(jobId);
         _projects[job.token].filled.add(jobId);
+        _open.remove(jobId);
+        _filled.add(jobId);
 
         uint feeQuantity = job.quantity.mul(FEE_BIPS).div(TOTAL_BIPS);
         IERC20(job.token).approve(address(_registry), feeQuantity);
@@ -247,7 +275,7 @@ contract JobBoard {
 
             if (refundQuantity > 0) {
                 require(
-                    IERC20(job.token).transfer(user, quantity),
+                    IERC20(job.token).transfer(user, refundQuantity),
                     ERROR_TRANSFER_FAILED
                 );
             }
@@ -467,6 +495,36 @@ contract JobBoard {
     }
 
     // Project getters
+
+    function getOpen() external view returns (uint[] memory) {
+        return _open.values();
+    }
+    function getOpenAt(uint index) external view returns (uint) {
+        return _open.at(index);
+    }
+    function getNumOpen() external view returns (uint) {
+        return _open.length();
+    }
+
+    function getFilled() external view returns (uint[] memory) {
+        return _filled.values();
+    }
+    function getFilledAt(uint index) external view returns (uint) {
+        return _filled.at(index);
+    }
+    function getNumFilled() external view returns (uint) {
+        return _filled.length();
+    }
+
+    function getCancelled() external view returns (uint[] memory) {
+        return _cancelled.values();
+    }
+    function getCancelledAt(uint index) external view returns (uint) {
+        return _cancelled.at(index);
+    }
+    function getNumCancelled() external view returns (uint) {
+        return _cancelled.length();
+    }
 
     function getOpen(address token) external view returns (uint[] memory) {
         return _projects[token].open.values();

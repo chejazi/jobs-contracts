@@ -3,13 +3,15 @@ pragma solidity ^0.8.20;
 
 interface IJobBoard {
     function create(string memory title, string memory description, address token, uint quantity, uint duration) external;
-    function update(uint jobId, string memory description) external;
+    function updateDescription(uint jobId, string memory description) external;
+    function updateDuration(uint jobId, uint duration) external;
     function transfer(uint jobId, address manager) external;
     function manage(uint jobId) external;
     function fund(uint jobId, uint quantity) external;
     function apply_(uint jobId) external;
-    function remove(uint jobId) external;
+    function unapply(uint jobId) external;
     function offer(uint jobId, bytes32 hash) external;
+    function rescind(uint jobId) external;
     function cancel(uint jobId) external;
     function accept(uint jobId, string memory secret) external;
     function end(uint jobId) external;
@@ -53,6 +55,15 @@ interface IJobBoard {
     function getWorked(address user) external view returns (uint[] memory);
     function getWorkedAt(address user, uint index) external view returns (uint);
     function getNumWorked(address user) external view returns (uint);
+    function getOpen() external view returns (uint[] memory);
+    function getOpenAt(uint index) external view returns (uint);
+    function getNumOpen() external view returns (uint);
+    function getFilled() external view returns (uint[] memory);
+    function getFilledAt(uint index) external view returns (uint);
+    function getNumFilled() external view returns (uint);
+    function getCancelled() external view returns (uint[] memory);
+    function getCancelledAt(uint index) external view returns (uint);
+    function getNumCancelled() external view returns (uint);
     function getOpen(address token) external view returns (uint[] memory);
     function getOpenAt(address token, uint index) external view returns (uint);
     function getNumOpen(address token) external view returns (uint);
