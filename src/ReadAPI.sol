@@ -10,7 +10,7 @@ import "./IStakeTracker.sol";
 
 contract ReadAPI {
     IRebase private constant _rebase = IRebase(0x89fA20b30a88811FBB044821FEC130793185c60B);
-    IJobBoard private constant _jobBoard = IJobBoard(0xbb69DBAC4aA4b886863b5B4278629FFbDb91Eb54);
+    IJobBoard private constant _jobBoard = IJobBoard(0xDC324998F1cbf814e5e4Fa29C60Be0778A1B702A);
     IRegistry private constant _registry = IRegistry(0x4011AaBAD557be4858E08496Db5B1f506a4e6167);
     address private constant _jobsToken = 0xd21111c0e32df451eb61A23478B438e3d71064CB; // $JOBS
 

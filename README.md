@@ -3,9 +3,13 @@
 ## Deployments (Verified on Basescan)
 
 ReadAPI: 0xAa8e6C563201773Ed08E1606E0900D468BCa530d
+
 JobBoard: 0xDC324998F1cbf814e5e4Fa29C60Be0778A1B702A
+
 Registry: 0x4011AaBAD557be4858E08496Db5B1f506a4e6167
+
 Splitter (template): 0x7a38bb6c8ac7fb434adcb7bf445c38ec3cff19da
+
 StakeTracker (template): 0xc090e7bba17b4c4e00455eb969d90c1323c30046
 
 
