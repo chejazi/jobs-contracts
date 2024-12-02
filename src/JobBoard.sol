@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
@@ -10,7 +9,6 @@ import "./IJobBoard.sol";
 import "./IRegistry.sol";
 
 contract JobBoard is IJobBoard {
-    using SafeMath for uint256;
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableMap for EnumerableMap.UintToUintMap;
@@ -26,17 +24,17 @@ contract JobBoard is IJobBoard {
         uint createTime;
 
         address pendingManager;
-        bytes32 pendingOffer;
+        address pendingWorker;
 
         address worker;
         uint startTime;
         uint timePaid;
         uint timeRefunded;
 
-        mapping(address => bool) funderRefunded;
-
         EnumerableMap.AddressToUintMap funderQuantities;
         EnumerableMap.AddressToUintMap applicantTimes;
+
+        address board;
     }
 
     struct Profile {
@@ -62,20 +60,22 @@ contract JobBoard is IJobBoard {
     EnumerableSet.UintSet private _filled;
     EnumerableSet.UintSet private _cancelled;
 
-    IRegistry private immutable _registry;
+    IRegistry private constant _registry = IRegistry(0x4011AaBAD557be4858E08496Db5B1f506a4e6167);
 
-    string private constant ERROR_TRANSFER_FAILED = "Transfer failed";
-    string private constant ERROR_NOT_AUTHORIZED = "Not authorized";
+    string private constant ERROR_TRANSFER_FAILED   = "Transfer failed";
+    string private constant ERROR_NOT_AUTHORIZED    = "Not authorized";
     string private constant ERROR_INVALID_JOB_STATE = "Invalid job state";
-    string private constant ERROR_INVALID_VALUE = "Invalid value";
+    string private constant ERROR_INVALID_VALUE     = "Invalid value";
 
     uint public constant JOB_STATUS_CREATED = 1;
     uint public constant JOB_STATUS_WORKING = 2;
-    uint public constant JOB_STATUS_ENDED = 3;
+    uint public constant JOB_STATUS_ENDED   = 3;
 
-    uint public constant FEE_BIPS = 1000; // 10%
-    uint public constant WORKER_BIPS = 9000; // 90%
-    uint public constant TOTAL_BIPS = 10000; // 100%
+    uint public constant FEE_BIPS =     1000; // 10%
+    uint public constant WORKER_BIPS =  9000; // 90%
+    uint public constant TOTAL_BIPS =  10000; // 100%
+
+    uint public constant MAX_FUNDERS =  100;
 
     uint public counter;
 
@@ -86,11 +86,38 @@ contract JobBoard is IJobBoard {
         _;
     }
 
-    constructor(address registry) {
-        _registry = IRegistry(registry);
+    constructor() {
+        JobBoard board = JobBoard(0xDC324998F1cbf814e5e4Fa29C60Be0778A1B702A);
+        uint numOldJobs = board.counter();
+        for (uint i = 1; i <= numOldJobs; i++) {
+            Job storage job = _jobs[i];
+            job.title = board.getTitle(i);
+            job.description = board.getDescription(i);
+            job.manager = board.getManager(i);
+            job.token = board.getToken(i);
+            job.quantity = board.getQuantity(i);
+            job.duration = board.getDuration(i);
+            job.createTime = board.getCreateTime(i);
+            job.worker = board.getWorker(i);
+            job.startTime = board.getStartTime(i);
+            job.board = address(board);
+            _profiles[job.manager].managed.add(i);
+            if (job.worker != address(0)) {
+                job.timePaid = job.duration;
+                _filled.add(i);
+                _projects[job.token].filled.add(i);
+                _profiles[job.worker].worked.add(i);
+            } else {
+                job.timeRefunded = job.duration;
+                _cancelled.add(i);
+                _projects[job.token].cancelled.add(i);
+            }
+            _tokens.add(job.token);
+        }
+        counter = numOldJobs;
     }
 
-    function create(string memory title, string memory description, address token, uint quantity, uint duration) external isRegistered {
+    function create(string memory title, string memory description, address token, uint quantity, uint duration) external isRegistered returns (uint) {
         uint jobId = ++counter;
         Job storage job = _jobs[jobId];
 
@@ -107,6 +134,7 @@ contract JobBoard is IJobBoard {
         job.token = token;
         job.duration = duration;
         job.createTime = block.timestamp;
+        job.board = address(this);
 
         _profiles[msg.sender].managed.add(jobId);
         _projects[token].open.add(jobId);
@@ -114,6 +142,8 @@ contract JobBoard is IJobBoard {
         _open.add(jobId);
 
         fund(jobId, quantity);
+
+        return jobId;
     }
 
     function updateDescription(uint jobId, string memory description) external {
@@ -125,19 +155,6 @@ contract JobBoard is IJobBoard {
         job.description = description;
     }
 
-    function updateDuration(uint jobId, uint duration) external {
-        Job storage job = _jobs[jobId];
-
-        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
-        require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
-        require(
-            duration > 0 &&
-            duration < 1000000000,
-            ERROR_INVALID_VALUE
-        );
-        job.duration = duration;
-    }
-
     function transfer(uint jobId, address manager) external {
         Job storage job = _jobs[jobId];
 
@@ -147,7 +164,7 @@ contract JobBoard is IJobBoard {
         job.pendingManager = manager;
     }
 
-    function manage(uint jobId) external {
+    function manage(uint jobId) external isRegistered {
         Job storage job = _jobs[jobId];
 
         require(getStatus(jobId) != JOB_STATUS_ENDED, ERROR_INVALID_JOB_STATE);
@@ -161,14 +178,14 @@ contract JobBoard is IJobBoard {
         Job storage job = _jobs[jobId];
 
         require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
+        require(quantity > 0, ERROR_INVALID_VALUE);
 
         (,uint funderQuantity) = job.funderQuantities.tryGet(msg.sender);
-
-        job.funderQuantities.set(msg.sender, funderQuantity.add(quantity));
-        job.quantity = job.quantity.add(quantity);
-
+        job.funderQuantities.set(msg.sender, funderQuantity + quantity);
+        job.quantity += quantity;
         _profiles[msg.sender].fundedTimes.set(jobId, block.timestamp);
 
+        require(job.funderQuantities.length() <= MAX_FUNDERS, "Max funders reached");
         require(
             IERC20(job.token).transferFrom(msg.sender, address(this), quantity),
             ERROR_TRANSFER_FAILED
@@ -192,24 +209,14 @@ contract JobBoard is IJobBoard {
         _jobs[jobId].applicantTimes.remove(msg.sender);
     }
 
-    function offer(uint jobId, bytes32 hash) public {
+    function cancel(uint jobId) external {
         Job storage job = _jobs[jobId];
 
         require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
         require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
 
-        job.pendingOffer = hash;
-    }
-
-    function rescind(uint jobId) public {
-        offer(jobId, bytes32(0));
-    }
-
-    function cancel(uint jobId) external {
-        Job storage job = _jobs[jobId];
-
-        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
-
+        job.pendingManager = address(0);
+        job.pendingWorker = address(0);
         job.timeRefunded = job.duration;
 
         _projects[job.token].open.remove(jobId);
@@ -217,19 +224,36 @@ contract JobBoard is IJobBoard {
         _open.remove(jobId);
         _cancelled.add(jobId);
 
-        refund(jobId, msg.sender);
+        _refund(jobId);
     }
 
-    function accept(uint jobId, string memory secret) external isRegistered {
+    function offer(uint jobId, address candidate) external {
         Job storage job = _jobs[jobId];
 
-        bytes32 pendingOffer = keccak256(abi.encodePacked(jobId, msg.sender, secret));
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
+        require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
+
+        job.pendingWorker = candidate;
+    }
+
+    function rescind(uint jobId) external {
+        Job storage job = _jobs[jobId];
 
         require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
-        require(job.pendingOffer == pendingOffer, ERROR_INVALID_VALUE);
+        require(job.manager == msg.sender, ERROR_NOT_AUTHORIZED);
+
+        job.pendingWorker = address(0);
+    }
+
+    function accept(uint jobId) external isRegistered {
+        Job storage job = _jobs[jobId];
+
+        require(getStatus(jobId) == JOB_STATUS_CREATED, ERROR_INVALID_JOB_STATE);
+        require(job.pendingWorker == msg.sender, ERROR_INVALID_VALUE);
 
         job.worker = msg.sender;
         job.startTime = block.timestamp;
+        job.pendingWorker = address(0);
 
         _profiles[msg.sender].worked.add(jobId);
         _projects[job.token].open.remove(jobId);
@@ -237,7 +261,7 @@ contract JobBoard is IJobBoard {
         _open.remove(jobId);
         _filled.add(jobId);
 
-        uint feeQuantity = job.quantity.mul(FEE_BIPS).div(TOTAL_BIPS);
+        uint feeQuantity = job.quantity * FEE_BIPS / TOTAL_BIPS;
         IERC20(job.token).approve(address(_registry), feeQuantity);
         _registry.rewardStakers(
             msg.sender,
@@ -257,46 +281,47 @@ contract JobBoard is IJobBoard {
             ERROR_NOT_AUTHORIZED
         );
 
-        job.timeRefunded = job.duration.sub(getTimeWorked(jobId));
+        job.timeRefunded = job.duration - getTimeWorked(jobId);
 
-        refund(jobId, msg.sender);
+        _refund(jobId);
     }
 
-    function refund(uint jobId, address user) public returns (uint) {
-        Job storage job = _jobs[jobId];
-
-        require(getStatus(jobId) == JOB_STATUS_ENDED, ERROR_INVALID_JOB_STATE);
-        require(!job.funderRefunded[user], ERROR_NOT_AUTHORIZED);
-
-        (bool funded, uint quantity) = job.funderQuantities.tryGet(user);
-        uint refundQuantity = quantity.mul(job.timeRefunded).div(job.duration);
-        if (funded) {
-            job.funderRefunded[user] = true;
-
-            if (refundQuantity > 0) {
-                require(
-                    IERC20(job.token).transfer(user, refundQuantity),
-                    ERROR_TRANSFER_FAILED
-                );
-            }
-        }
-        return refundQuantity;
-    }
-
-    function claim(uint jobId, address to) public {
+    function claim(uint jobId, address to) external {
         Job storage job = _jobs[jobId];
 
         require(job.worker == msg.sender, ERROR_NOT_AUTHORIZED);
 
         (uint timeOwed, uint moneyOwed) = getTimeAndMoneyOwed(jobId);
 
-        job.timePaid = job.timePaid.add(timeOwed);
+        job.timePaid += timeOwed;
 
         if (moneyOwed > 0) {
             require(
                 IERC20(job.token).transfer(to, moneyOwed),
                 ERROR_TRANSFER_FAILED
             );
+        }
+    }
+
+    function _refund(uint jobId) internal {
+        Job storage job = _jobs[jobId];
+
+        require(getStatus(jobId) == JOB_STATUS_ENDED, ERROR_INVALID_JOB_STATE);
+
+        EnumerableMap.AddressToUintMap storage funderQuantities = job.funderQuantities;
+        address[] memory funders = funderQuantities.keys();
+        uint timeRefunded = job.timeRefunded;
+        uint duration = job.duration;
+        address token = job.token;
+        for (uint256 i = 0; i < funders.length; i++) {
+            uint refund = job.funderQuantities.get(funders[i]) * timeRefunded / duration;
+
+            if (refund > 0) {
+                require(
+                    IERC20(token).transfer(funders[i], refund),
+                    ERROR_TRANSFER_FAILED
+                );
+            }
         }
     }
 
@@ -318,10 +343,10 @@ contract JobBoard is IJobBoard {
     function getTimeAndMoneyOwed(uint jobId) public view returns (uint, uint) {
         Job storage job = _jobs[jobId];
 
-        uint timeOwed = getTimeWorked(jobId).sub(job.timePaid);
+        uint timeOwed = getTimeWorked(jobId) - job.timePaid;
         uint moneyOwed = job.quantity
-            .mul(WORKER_BIPS).div(TOTAL_BIPS)
-            .mul(timeOwed).div(job.duration);
+            * WORKER_BIPS / TOTAL_BIPS
+            * timeOwed / job.duration;
 
         return (timeOwed, moneyOwed);
     }
@@ -331,10 +356,10 @@ contract JobBoard is IJobBoard {
 
         uint timeRefunded = job.timeRefunded;
         if (timeRefunded > 0) {
-            return job.duration.sub(timeRefunded);
+            return job.duration - timeRefunded;
         } else if (job.worker != address(0)) {
             return Math.min(
-                block.timestamp.sub(job.startTime),
+                block.timestamp - job.startTime,
                 job.duration
             );
         }
@@ -375,8 +400,8 @@ contract JobBoard is IJobBoard {
         return _jobs[jobId].pendingManager;
     }
 
-    function getPendingOffer(uint jobId) external view returns (bytes32) {
-        return _jobs[jobId].pendingOffer;
+    function getPendingWorker(uint jobId) external view returns (address) {
+        return _jobs[jobId].pendingWorker;
     }
 
     function getWorker(uint jobId) external view returns (address) {
@@ -393,10 +418,6 @@ contract JobBoard is IJobBoard {
 
     function getTimeRefunded(uint jobId) external view returns (uint) {
         return _jobs[jobId].timeRefunded;
-    }
-
-    function getFunderRefunded(uint jobId, address user) external view returns (bool) {
-        return _jobs[jobId].funderRefunded[user];
     }
 
     function getFunderQuantity(uint jobId, address funder) external view returns (uint) {
@@ -434,9 +455,13 @@ contract JobBoard is IJobBoard {
         return _jobs[jobId].applicantTimes.length();
     }
 
+    function getBoard(uint jobId) external view returns (address) {
+        return _jobs[jobId].board;
+    }
+
     // Profile getters
 
-    function hasApplied(address user, uint jobId) external view returns (bool) {
+    function hasApplied(address user, uint jobId) public view returns (bool) {
         return _profiles[user].appliedTimes.contains(jobId);
     }
     function getAppliedTimes(address user) external view returns (uint[] memory, uint[] memory) {

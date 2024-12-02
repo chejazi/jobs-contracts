@@ -2,20 +2,18 @@
 pragma solidity ^0.8.20;
 
 interface IJobBoard {
-    function create(string memory title, string memory description, address token, uint quantity, uint duration) external;
+    function create(string memory title, string memory description, address token, uint quantity, uint duration) external returns (uint);
     function updateDescription(uint jobId, string memory description) external;
-    function updateDuration(uint jobId, uint duration) external;
     function transfer(uint jobId, address manager) external;
     function manage(uint jobId) external;
     function fund(uint jobId, uint quantity) external;
     function apply_(uint jobId) external;
     function unapply(uint jobId) external;
-    function offer(uint jobId, bytes32 hash) external;
+    function offer(uint jobId, address candidate) external;
     function rescind(uint jobId) external;
     function cancel(uint jobId) external;
-    function accept(uint jobId, string memory secret) external;
+    function accept(uint jobId) external;
     function end(uint jobId) external;
-    function refund(uint jobId, address user) external returns (uint);
     function claim(uint jobId, address to) external;
     function getStatus(uint jobId) external view returns (uint);
     function getTimeAndMoneyOwed(uint jobId) external view returns (uint, uint);
@@ -28,12 +26,11 @@ interface IJobBoard {
     function getDuration(uint jobId) external view returns (uint);
     function getCreateTime(uint jobId) external view returns (uint);
     function getPendingManager(uint jobId) external view returns (address);
-    function getPendingOffer(uint jobId) external view returns (bytes32);
+    function getPendingWorker(uint jobId) external view returns (address);
     function getWorker(uint jobId) external view returns (address);
     function getStartTime(uint jobId) external view returns (uint);
     function getTimePaid(uint jobId) external view returns (uint);
     function getTimeRefunded(uint jobId) external view returns (uint);
-    function getFunderRefunded(uint jobId, address user) external view returns (bool);
     function getFunderQuantity(uint jobId, address funder) external view returns (uint);
     function getFunderQuantities(uint jobId) external view returns (address[] memory, uint[] memory);
     function getFunderQuantityAt(uint jobId, uint index) external view returns (address, uint);
@@ -76,4 +73,5 @@ interface IJobBoard {
     function getTokens() external view returns (address[] memory);
     function getTokenAt(uint index) external view returns (address);
     function getNumTokens() external view returns (uint);
+    function counter() external view returns (uint);
 }
