@@ -310,15 +310,19 @@ contract JobBoard is IJobBoard {
 
         EnumerableMap.AddressToUintMap storage funderQuantities = job.funderQuantities;
         address[] memory funders = funderQuantities.keys();
-        uint timeRefunded = job.timeRefunded;
-        uint duration = job.duration;
         address token = job.token;
+        uint totalFunding = job.quantity;
+        uint refundableFunding = totalFunding;
+        if (job.worker != address(0)) {
+            refundableFunding -= (totalFunding * FEE_BIPS / TOTAL_BIPS);
+        }
+        refundableFunding = refundableFunding * job.timeRefunded / job.duration;
         for (uint256 i = 0; i < funders.length; i++) {
-            uint refund = job.funderQuantities.get(funders[i]) * timeRefunded / duration;
-
-            if (refund > 0) {
+            uint userFunding = funderQuantities.get(funders[i]);
+            uint userRefund = refundableFunding * userFunding / totalFunding;
+            if (userRefund > 0) {
                 require(
-                    IERC20(token).transfer(funders[i], refund),
+                    IERC20(token).transfer(funders[i], userRefund),
                     ERROR_TRANSFER_FAILED
                 );
             }

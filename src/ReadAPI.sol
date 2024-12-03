@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "./IRebase.sol";
 import "./IJobBoard.sol";
 import "./IRegistry.sol";
 import "./ISplitter.sol";
 import "./IStakeTracker.sol";
+
+interface IToken is IERC20Metadata {
+    function image() external view returns (string memory);
+}
 
 contract ReadAPI {
     IRebase private constant _rebase = IRebase(0x89fA20b30a88811FBB044821FEC130793185c60B);
@@ -66,19 +70,23 @@ contract ReadAPI {
         return (titles, descriptions, managers, tokens, quantities, durations, createTimes, statuses);
     }
 
-    function getTokenMetadata(address[] memory tokens) public view returns (string[] memory, string[] memory, uint[] memory, uint[] memory supply) {
+    function getTokenMetadata(address[] memory tokens) public view returns (string[] memory, string[] memory, uint[] memory, uint[] memory, string[] memory) {
         string[] memory names = new string[](tokens.length);
         string[] memory symbols = new string[](tokens.length);
         uint[] memory decimals = new uint[](tokens.length);
         uint[] memory supplies = new uint[](tokens.length);
+        string[] memory images = new string[](tokens.length);
         for (uint i = 0; i < tokens.length; i++) {
-            ERC20 token = ERC20(tokens[i]);
+            IToken token = IToken(tokens[i]);
             names[i] = token.name();
             symbols[i] = token.symbol();
             decimals[i] = token.decimals();
             supplies[i] = token.totalSupply();
+            try token.image() returns (string memory image) {
+                images[i] = image;
+            } catch { }
         }
-        return (names, symbols, decimals, supplies);
+        return (names, symbols, decimals, supplies, images);
     }
 
     function getStakedJobs(address[] memory users) external view returns (uint[] memory) {
@@ -88,7 +96,7 @@ contract ReadAPI {
             if (splitter != address(0)) {
                 address stakeTracker = ISplitter(splitter).getStakeTracker(_jobsToken);
                 if (stakeTracker != address(0)) {
-                    staked[i] = IERC20(stakeTracker).totalSupply();
+                    staked[i] = IToken(stakeTracker).totalSupply();
                 }
             }
         }
